@@ -1,33 +1,124 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
+import requests
+from bs4 import BeautifulSoup
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+import pandas as pd
+import re
 
-st.set_page_config(page_title="BearAlert Bieszczady", layout="wide")
+st.set_page_config(page_title="BearAlert: Monitoring Bieszczady", layout="wide", page_icon="🐻")
 
-st.title("🐻 BearAlert: Lesko - Solina - Bieszczady")
-st.info("System ostrzegania przed aktywnością niedźwiedzi.")
+# Inicjalizacja geokodera
+geolocator = Nominatim(user_agent="bieszczady_bear_alert_v2")
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.5)
 
-# Twoje dane (Lesko, Zagórz, Solina, Myczków, Zahutyn, Załuż)
-if 'incydenty' not in st.session_state:
-    st.session_state.incydenty = [
-        {"miasto": "Lesko", "lat": 49.470, "lon": 22.330, "status": "Wysoki", "info": "Widziany przy ogródkach."},
-        {"miasto": "Zagórz", "lat": 49.508, "lon": 22.272, "status": "Średni", "info": "Ślady nad Osławą."},
-        {"miasto": "Zahutyn", "lat": 49.525, "lon": 22.245, "status": "Wysoki", "info": "Pojawia się wieczorami pod lasem."},
-        {"miasto": "Myczków", "lat": 49.415, "lon": 22.410, "status": "Krytyczny", "info": "Niedźwiedzica z młodymi - UWAGA!"},
-        {"miasto": "Solina", "lat": 49.395, "lon": 22.450, "status": "Średni", "info": "Okolice ścieżek spacerowych."}
-    ]
+st.title("🐻 BearAlert: esanok.pl LIVE")
+st.markdown("Automatyczny system wykrywania zagrożeń na podstawie komunikatów lokalnych.")
 
-# Mapa
-m = folium.Map(location=[49.460, 22.350], zoom_start=12)
+# Słowa kluczowe wskazujące na realne zagrożenie (z Twoich screenów)
+DANGER_KEYWORDS = ["ataki", "ruszył", "widziany", "spacerował", "posesji", "oknami", "ostrzegają", "niedźwiedzica", "mieszkańca"]
 
-for i in st.session_state.incydenty:
-    kolor = "red" if i['status'] in ["Wysoki", "Krytyczny"] else "orange"
-    folium.Circle(location=[i['lat'], i['lon']], radius=1200, color=kolor, fill=True, fill_opacity=0.3).add_to(m)
-    folium.Marker([i['lat'], i['lon']], popup=i['info'], tooltip=i['miasto']).add_to(m)
+def wyciagnij_miejsce(tekst):
+    """
+    Zaawansowana próba wyciągnięcia miejscowości i szczegółów z tekstu.
+    Szuka wzorców: 'w Zahutyniu', 'w Wołkowyi', 'w miejscowości X'.
+    """
+    # Usuwamy znaki interpunkcyjne
+    czysty_tekst = re.sub(r'[^\w\s]', '', tekst)
+    
+    # 1. Szukamy frazy "w [Miejscowość]" lub "w miejscowości [Miejscowość]"
+    match = re.search(r'(?:w|miejscowości)\s+([A-Z][a-zśćńółężź]+)', tekst)
+    if match:
+        miejscowosc = match.group(1)
+        # Poprawka deklinacji (bardzo uproszczona dla regionu)
+        miejscowosc = miejscowosc.replace("Zahutyniu", "Zahutyń").replace("Wołkowyi", "Wołkowyja").replace("Tarnawie", "Tarnawa").replace("Bereźnicy", "Bereźnica")
+        return miejscowosc
+    return None
 
-st_folium(m, width="100%", height=500)
+def pobierz_dane():
+    url = "https://esanok.pl/?s=niedźwiedź"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    znaleziska = []
+    
+    try:
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Pobieramy najświeższe artykuły
+        artykuly = soup.find_all('article')[:8]
+        
+        for art in artykuly:
+            tytul_elem = art.find('h2', class_='entry-title')
+            if not tytul_elem: continue
+            
+            tytul = tytul_elem.text.strip()
+            link = tytul_elem.find('a')['href']
+            
+            # Pobieramy wstęp (summary)
+            summary_elem = art.find('div', class_='entry-summary')
+            summary = summary_elem.text.strip() if summary_elem else ""
+            
+            # Czy to artykuł o niedźwiedziu z Twojej "czarnej listy"?
+            pelny_tekst = (tytul + " " + summary).lower()
+            
+            if "niedźwiedź" in pelny_tekst or "niedźwiedzica" in pelny_tekst:
+                if any(k in pelny_tekst for k in DANGER_KEYWORDS):
+                    miejsce = wyciagnij_miejsce(tytul)
+                    if not miejsce: # Jeśli nie ma w tytule, szukaj w opisie
+                        miejsce = wyciagnij_miejsce(summary)
+                    
+                    if miejsce:
+                        # Geokodowanie - szukamy konkretnie w naszym regionie
+                        loc = geocode(f"{miejsce}, Podkarpackie, Polska")
+                        coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
+                        
+                        znaleziska.append({
+                            "tytul": tytul,
+                            "link": link,
+                            "miejsce": miejsce,
+                            "coords": coords,
+                            "opis": summary[:150] + "..."
+                        })
+        return znaleziska
+    except Exception as e:
+        return []
 
-st.write("### 📋 Ostatnie meldunki:")
-for inc in reversed(st.session_state.incydenty):
-    st.warning(f"**{inc['miasto']}** - {inc['info']}")
-  
+# Główna logika aplikacji
+if 'data' not in st.session_state:
+    with st.spinner('Pobieram najnowsze raporty...'):
+        st.session_state.data = pobierz_dane()
+
+# Przyciski kontrolne
+col1, col2 = st.columns([1, 4])
+with col1:
+    if st.button("🔄 Odśwież"):
+        st.session_state.data = pobierz_dane()
+        st.rerun()
+
+# MAPA
+m = folium.Map(location=[49.460, 22.350], zoom_start=11, tiles="OpenStreetMap")
+
+for item in st.session_state.data:
+    # Czerwona pulsująca kropka dla każdego zgłoszenia
+    folium.Marker(
+        location=item['coords'],
+        popup=folium.Popup(f"<b>{item['tytul']}</b><br><a href='{item['link']}' target='_blank'>Link do eSanok</a>", max_width=250),
+        tooltip=f"{item['miejsce']}: {item['tytul']}",
+        icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa')
+    ).add_to(m)
+
+st_folium(m, width="100%", height=550)
+
+# LISTA PONIŻEJ
+st.subheader("⚠️ Ostatnie wykryte incydenty")
+if st.session_state.data:
+    for n in st.session_state.data:
+        with st.container():
+            st.error(f"**{n['miejsce']}**: {n['tytul']}")
+            st.write(n['opis'])
+            st.markdown(f"[Czytaj pełną relację na esanok.pl]({n['link']})")
+            st.divider()
+else:
+    st.success("Brak nowych komunikatów o niedźwiedziach w ostatnim czasie.")
