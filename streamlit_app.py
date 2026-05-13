@@ -7,14 +7,13 @@ from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 import pandas as pd
 from datetime import datetime, timedelta
+import time
 
-# Konfiguracja strony
+# Konfiguracja strefy czasowej i strony
 st.set_page_config(page_title="BearAlert PRO", layout="wide", page_icon="🐻")
-
-# Naprawa czasu dla Polski (UTC + 2h)
 polski_czas = datetime.now() + timedelta(hours=2)
 
-# Stylizacja Dashboardu
+# Stylizacja
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: white; }
@@ -22,99 +21,88 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Narzędzia lokalizacji
-geolocator = Nominatim(user_agent="bear_alert_bieszczady_v6")
-geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+# Geolokalizacja
+geolocator = Nominatim(user_agent="bieszczady_bear_final_fix")
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.2)
 
 def wyciagnij_miejsce(tekst):
-    """Szybkie wyciąganie miejscowości z tytułu na podstawie słownika"""
-    miejscowosci = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Ustrzyki", "Bereźnica", "Huzele", "Płonna", "Bukowsko", "Domaradz", "Myczków", "Olchowce"]
-    # Naprawa najczęstszych odmian z eSanok
-    tekst_poprawiony = tekst.replace("Zahutyniu", "Zahutyń").replace("Wołkowyi", "Wołkowyja").replace("Tarnawie", "Tarnawa").replace("Bereźnicy", "Bereźnica").replace("Myczkowie", "Myczków").replace("Domaradzu", "Domaradz")
-    
-    for m in miejscowosci:
-        if m.lower() in tekst_poprawiony.lower():
-            return m
+    regiony = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Ustrzyki", "Bereźnica", "Huzele", "Płonna", "Bukowsko", "Morochów", "Myczków", "Brzozów"]
+    tekst_popr = tekst.replace("Zahutyniu", "Zahutyń").replace("Wołkowyi", "Wołkowyja").replace("Morochowie", "Morochów").replace("Płonnej", "Płonna")
+    for r in regiony:
+        if r.lower() in tekst_popr.lower():
+            return r
     return "Bieszczady"
 
-def pobierz_dane_stabilne():
-    # Szukamy bezpośrednio po frazie niedźwiedź
-    url = "https://esanok.pl/?s=niedźwiedź"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    wyniki = []
+def pobierz_dane_bezposrednie():
+    # Skanujemy stronę główną i działy zamiast wyszukiwarki (to omija blokady)
+    urls = ["https://esanok.pl/", "https://esanok.pl/category/wiadomosci"]
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    znaleziska = []
     
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Pobieramy nagłówki h2 (tytuły artykułów)
-        artykuly = soup.find_all('h2', class_='entry-title')
-        
-        for art in artykuly:
-            tytul = art.text.strip()
-            link_tag = art.find('a')
-            if not link_tag: continue
-            link = link_tag['href']
+    for url in urls:
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # Szukamy linków w nagłówkach h1, h2, h3
+            for tag in soup.find_all(['h1', 'h2', 'h3']):
+                tytul = tag.text.strip()
+                link_tag = tag.find('a')
+                if link_tag and any(slowo in tytul.lower() for slowo in ["niedźwiedź", "niedźwiedzica", "drapieżnik"]):
+                    link = link_tag['href']
+                    if not link.startswith('http'): link = "https://esanok.pl" + link
+                    
+                    miejsce = wyciagnij_miejsce(tytul)
+                    loc = geocode(f"{miejsce}, Podkarpackie, Polska")
+                    coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
+                    
+                    znaleziska.append({
+                        "Tytuł": tytul,
+                        "Miejsce": miejsce,
+                        "Link": link,
+                        "Coords": coords,
+                        "Data": polski_czas.strftime("%H:%M")
+                    })
+            time.sleep(1) # Delikatna przerwa
+        except:
+            continue
             
-            # Filtracja - tylko realne newsy o niedźwiedziach
-            if any(slowo in tytul.lower() for slowo in ["niedźwiedź", "niedźwiedzica", "drapieżnik"]):
-                miejsce = wyciagnij_miejsce(tytul)
-                
-                # Geokodowanie
-                loc = geocode(f"{miejsce}, Podkarpackie, Polska")
-                coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
-                
-                wyniki.append({
-                    "Tytuł": tytul,
-                    "Miejsce": miejsce,
-                    "Link": link,
-                    "Coords": coords
-                })
-        return pd.DataFrame(wyniki)
-    except Exception as e:
-        st.sidebar.error(f"Błąd połączenia: {e}")
-        return pd.DataFrame()
+    df = pd.DataFrame(znaleziska).drop_duplicates(subset=['Link']) if znaleziska else pd.DataFrame()
+    return df
 
-# Logika pobierania
-if 'df_v6' not in st.session_state or st.sidebar.button("🔄 ODŚWIEŻ RAPORTY"):
-    with st.spinner('Pobieram najnowsze dane z eSanok...'):
-        st.session_state.df_v6 = pobierz_dane_stabilne()
+# Logika Streamlit
+if 'df_final' not in st.session_state or st.sidebar.button("🔄 WYMUŚ ODŚWIEŻANIE"):
+    with st.spinner('Skanuję portal eSanok...'):
+        st.session_state.df_final = pobierz_dane_bezposrednie()
 
-df = st.session_state.df_v6
+df = st.session_state.df_final
 
 # --- DASHBOARD ---
 st.title("🐻 BearAlert PRO: Monitoring Zagrożeń")
 
 c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("Status Systemu", "Aktywny 🟢")
-with c2:
-    st.metric("Liczba alertów", len(df))
-with c3:
-    st.metric("Czas skanowania (PL)", polski_czas.strftime("%H:%M"))
+with c1: st.metric("System", "Online 🟢")
+with c2: st.metric("Alerty", len(df))
+with c3: st.metric("Aktualizacja", polski_czas.strftime("%H:%M"))
 
 col_map, col_info = st.columns([2, 1])
 
 with col_map:
-    # Ciemna mapa
     m = folium.Map(location=[49.46, 22.35], zoom_start=11, tiles='CartoDB dark_matter')
-    
     if not df.empty:
         for _, row in df.iterrows():
-            popup_html = f"<div style='color:black;'><b>{row['Miejsce']}</b><br>{row['Tytuł']}<br><a href='{row['Link']}' target='_blank'>Otwórz artykuł</a></div>"
             folium.Marker(
                 location=row['Coords'],
-                popup=folium.Popup(popup_html, max_width=250),
-                icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa')
+                popup=f"<b>{row['Miejsce']}</b><br>{row['Tytuł']}<br><a href='{row['Link']}'>Link</a>",
+                icon=folium.Icon(color='red', icon='warning', prefix='fa')
             ).add_to(m)
     st_folium(m, width="100%", height=500)
 
 with col_info:
-    st.subheader("🚩 Najnowsze komunikaty")
+    st.subheader("🚩 Ostatnie newsy")
     if not df.empty:
         for _, row in df.iterrows():
             with st.expander(f"📍 {row['Miejsce']}"):
                 st.write(row['Tytuł'])
-                st.link_button("Czytaj na eSanok", row['Link'])
+                st.link_button("Czytaj artykuł", row['Link'])
     else:
-        st.warning("Nie znaleziono nowych artykułów. Spróbuj odświeżyć za chwilę.")
+        st.warning("Portal eSanok nie udostępnił nowych danych w tej chwili. Spróbuj za 5 minut.")
