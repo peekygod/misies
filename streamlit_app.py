@@ -6,145 +6,119 @@ from bs4 import BeautifulSoup
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 # Konfiguracja strony
-st.set_page_config(page_title="BearAlert PRO | Monitoring Bieszczady", layout="wide", page_icon="🐻")
+st.set_page_config(page_title="BearAlert PRO", layout="wide", page_icon="🐻")
 
-# Stylizacja CSS dla efektu "Premium"
+# Naprawa czasu dla Polski (UTC + 2h)
+polski_czas = datetime.now() + timedelta(hours=2)
+
+# Stylizacja Dashboardu
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: white; }
     .stMetric { background-color: #1f2937; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4b4b; }
-    .stExpander { border: 1px solid #374151; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# Inicjalizacja narzędzi
-geolocator = Nominatim(user_agent="bieszczady_bear_monitor_v4")
-geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.5)
+# Narzędzia lokalizacji
+geolocator = Nominatim(user_agent="bear_alert_bieszczady_v5")
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
 
-def wyciagnij_date_i_miejsce(url):
-    """Wchodzi w artykuł i wyciąga dokładną datę oraz próbuje znaleźć lokalizację"""
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # Próba wyciągnięcia daty z meta-tagów lub treści
-        data_str = "Nieznana"
-        date_tag = soup.find('meta', property='article:published_time')
-        if date_tag:
-            dt = datetime.fromisoformat(date_tag['content'].replace('Z', '+00:00'))
-            data_str = dt.strftime("%d.%m.%L %H:%M")
-        else:
-            # Szukanie tekstu daty na stronie (np. "12-05-2026")
-            text_date = soup.find(text=re.compile(r'\d{2}-\d{2}-\d{4}'))
-            if text_date: data_str = text_date.strip()
+def wyciagnij_miejsce(tekst):
+    """Szybkie wyciąganie miejscowości z tytułu"""
+    miejscowosci = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Ustrzyki", "Bereźnica", "Huzele", "Płonna", "Bukowsko"]
+    # Naprawa odmian
+    tekst = tekst.replace("Zahutyniu", "Zahutyń").replace("Wołkowyi", "Wołkowyja").replace("Tarnawie", "Tarnawa").replace("Bereźnicy", "Bereźnica")
+    for m in miejscowosci:
+        if m.lower() in tekst.lower():
+            return m
+    return "Bieszczady"
 
-        # Szukanie miejscowości w treści
-        tresc = soup.find('div', class_='entry-content').text if soup.find('div', class_='entry-content') else ""
-        miejscowosci = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Ustrzyki", "Bereźnica", "Huzele"]
-        znaleziona = "Bieszczady"
-        for m in miejscowosci:
-            if m.lower() in tresc.lower() or m.lower() in url.lower():
-                znaleziona = m
-                break
-                
-        return data_str, znaleziona, tresc[:300]
-    except:
-        return "Brak danych", "Bieszczady", ""
-
-def pobierz_raporty():
+def pobierz_dane_stabilne():
     url = "https://esanok.pl/?s=niedźwiedź"
     headers = {'User-Agent': 'Mozilla/5.0'}
     wyniki = []
     
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        artykuly = soup.find_all('h2', class_='entry-title')[:6] # Ostatnie 6 newsów
+        # Szukamy nagłówków artykułów
+        artykuly = soup.find_all('h2', class_='entry-title')
         
         for art in artykuly:
             tytul = art.text.strip()
             link = art.find('a')['href']
             
-            data_pub, miejsce, opis = wyciagnij_date_i_miejsce(link)
-            
-            # Geokodowanie
-            loc = geocode(f"{miejsce}, Podkarpackie, Polska")
-            coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
-            
-            wyniki.append({
-                "Tytuł": tytul,
-                "Data": data_pub,
-                "Miejsce": miejsce,
-                "Link": link,
-                "Coords": coords,
-                "Opis": opis
-            })
+            # Tylko jeśli artykuł faktycznie jest o niedźwiedziu
+            if "niedźwiedź" in tytul.lower() or "niedźwiedzica" in tytul.lower():
+                miejsce = wyciagnij_miejsce(tytul)
+                
+                # Geokodowanie
+                loc = geocode(f"{miejsce}, Podkarpackie, Polska")
+                coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
+                
+                wyniki.append({
+                    "Tytuł": tytul,
+                    "Miejsce": miejsce,
+                    "Link": link,
+                    "Coords": coords,
+                    "Czas": polski_czas.strftime("%H:%M") # Czas pobrania informacji
+                })
         return pd.DataFrame(wyniki)
     except:
         return pd.DataFrame()
 
-# --- SIDEBAR (Statystyki) ---
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/235/235359.png", width=100)
-st.sidebar.title("BearAlert Panel")
-st.sidebar.info("System skanuje eSanok.pl w poszukiwaniu nowych incydentów.")
+# Pobieranie danych
+if 'df_v5' not in st.session_state or st.sidebar.button("🔄 ODŚWIEŻ DANE"):
+    with st.spinner('Synchronizacja z eSanok...'):
+        st.session_state.df_v5 = pobierz_dane_stabilne()
 
-if st.sidebar.button("🔄 SZUKAJ NOWYCH ŚLADÓW"):
-    st.session_state.df = pobierz_raporty()
+df = st.session_state.df_v5
 
-if 'df' not in st.session_state:
-    st.session_state.df = pobierz_raporty()
+# --- LAYOUT ---
+st.title("🐻 BearAlert: Monitorowanie Zagrożeń")
 
-df = st.session_state.df
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric("Status Systemu", "Aktywny 🟢")
+with c2:
+    st.metric("Wykryte Incydenty", len(df))
+with c3:
+    st.metric("Ostatni skan (Czas PL)", polski_czas.strftime("%H:%M"))
 
-# --- GŁÓWNY PANEL ---
-col_map, col_list = st.columns([2, 1])
+col_map, col_info = st.columns([2, 1])
 
 with col_map:
-    st.subheader("📍 Mapa Aktywności (LIVE)")
-    # Używamy ciemnego stylu mapy "CartoDB Dark Matter"
+    # Ciemna, interaktywna mapa
     m = folium.Map(location=[49.46, 22.35], zoom_start=11, tiles='CartoDB dark_matter')
     
     if not df.empty:
         for _, row in df.iterrows():
-            # Tworzymy ładny dymek HTML
-            html = f"""
-            <div style="font-family: Arial; color: #333;">
-                <h4 style="margin-bottom:5px; color:#e74c3c;">{row['Miejsce']}</h4>
-                <p style="font-size:12px;"><b>Data:</b> {row['Data']}</p>
-                <p style="font-size:11px;">{row['Tytuł']}</p>
-                <a href="{row['Link']}" target="_blank" style="color:#3498db;">Otwórz artykuł</a>
+            popup_html = f"""
+            <div style='color:black; min-width:150px;'>
+                <b>{row['Miejsce']}</b><br>
+                {row['Tytuł']}<br>
+                <a href='{row['Link']}' target='_blank'>Zobacz artykuł</a>
             </div>
             """
             folium.Marker(
                 location=row['Coords'],
-                popup=folium.Popup(html, max_width=200),
-                tooltip=f"{row['Miejsce']} - {row['Data']}",
-                icon=folium.Icon(color='red', icon='paw', prefix='fa')
+                popup=folium.Popup(popup_html, max_width=250),
+                icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa')
             ).add_to(m)
-    
-    st_folium(m, width="100%", height=550)
+    st_folium(m, width="100%", height=500)
 
-with col_list:
-    st.subheader("📊 Statystyki")
-    st.metric("Wykryte incydenty", len(df))
-    st.metric("Ostatnia aktualizacja", datetime.now().strftime("%H:%M:%S"))
-    
-    st.divider()
-    st.subheader("📜 Ostatnie wpisy")
+with col_info:
+    st.subheader("🚩 Ostatnie doniesienia")
     if not df.empty:
         for _, row in df.iterrows():
-            with st.expander(f"🔴 {row['Data']} - {row['Miejsce']}"):
+            with st.expander(f"📍 {row['Miejsce']}"):
                 st.write(row['Tytuł'])
-                st.caption(row['Opis'] + "...")
-                st.link_button("Szczegóły", row['Link'])
+                st.link_button("Otwórz eSanok", row['Link'])
     else:
-        st.write("Brak danych do wyświetlenia.")
+        st.error("Brak danych. Sprawdź połączenie z esanok.pl")
 
-# Stopka
-st.markdown("---")
-st.caption("Dane pobierane automatycznie z portalu eSanok.pl. Zachowaj ostrożność w lasach!")
+st.caption("Aplikacja analizuje nagłówki serwisu eSanok.pl w czasie rzeczywistym.")
