@@ -3,3 +3,6 @@ folium
 streamlit-folium
 requests
 beautifulsoup4
+geopy
+pandas
+
