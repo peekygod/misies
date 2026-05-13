@@ -1,16 +1,13 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-import requests
-from bs4 import BeautifulSoup
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Konfiguracja
-st.set_page_config(page_title="BearAlert PRO", layout="wide", page_icon="🐻")
-polski_czas = datetime.now() + timedelta(hours=2)
+# 1. KONFIGURACJA STRONY
+st.set_page_config(page_title="BearAlert: Twoja Mapa", layout="wide", page_icon="🐻")
 
 st.markdown("""
     <style>
@@ -19,93 +16,82 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Geolokalizacja - zmiana User-Agent na unikalny losowy ciąg
-geolocator = Nominatim(user_agent="bieszczady_bear_final_rescuetool_99")
-geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+# 2. TWOJA LISTA INCYDENTÓW (TUTAJ DOPISUJESZ NOWE)
+# Możesz edytować poniższą listę. Pamiętaj o przecinkach i cudzysłowach!
+dane_od_uzytkownika = [
+    {
+        "data": "12.05.2026 08:30",
+        "miejsce": "Zahutyń",
+        "opis": "Niedźwiedź widziany przy drodze krajowej, ruszył w stronę posesji.",
+        "link": "https://esanok.pl"
+    },
+    {
+        "data": "11.05.2026 19:15",
+        "miejsce": "Wołkowyja",
+        "opis": "Atak na pasiekę obok domów mieszkalnych.",
+        "link": "https://esanok.pl"
+    },
+    {
+        "data": "10.05.2026 22:00",
+        "miejsce": "Tarnawa",
+        "opis": "Niedźwiedzica z młodymi spacerowała pod oknami mieszkańców.",
+        "link": "https://esanok.pl"
+    },
+    # Aby dodać nowy, skopiuj poniższe i wklej powyżej tego nawiasu:
+    # {"data": "DATA", "miejsce": "MIEJSCOWOŚĆ", "opis": "OPIS", "link": "LINK"},
+]
 
-def pobierz_dane_bez_zawieszania():
-    url = "https://esanok.pl/"
-    # Zmieniony User-Agent na bardziej "ludzki"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7'
-    }
-    wyniki = []
-    
-    try:
-        # Bardzo krótki timeout, żeby aplikacja "nie wisiała"
-        response = requests.get(url, headers=headers, timeout=3)
-        if response.status_code != 200:
-            return pd.DataFrame()
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        # Skanujemy tylko główne nagłówki h2 i h3 (najszybsze)
-        for tag in soup.find_all(['h2', 'h3']):
-            tytul = tag.get_text().strip()
-            if any(key in tytul.lower() for key in ["niedźwiedź", "niedźwiedzica", "niedźwiedzie"]):
-                link_tag = tag.find('a')
-                if not link_tag: continue
-                link = link_tag['href']
-                
-                # Wykrywanie miejsca
-                miejsca = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Huzele", "Płonna", "Myczków", "Brzozów", "Morochów"]
-                wykryte = "Bieszczady"
-                for m in miejsca:
-                    if m.lower() in tytul.lower():
-                        wykryte = m
-                        break
-                
-                # Geokodowanie
-                loc = geocode(f"{wykryte}, Podkarpackie, Polska")
-                coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
-                
-                wyniki.append({"Tytuł": tytul, "Miejsce": wykryte, "Link": link, "Coords": coords})
-        
-        return pd.DataFrame(wyniki).drop_duplicates(subset=['Link'])
-    except:
-        # W razie jakiegokolwiek błędu/blokady, zwróć pustą tabelę natychmiast
-        return pd.DataFrame()
+# 3. LOGIKA MAPY
+geolocator = Nominatim(user_agent="bear_manual_map_v1")
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=0.5)
 
-# Logika
-if 'last_df' not in st.session_state:
-    st.session_state.last_df = pd.DataFrame()
+@st.cache_data
+def przygotuj_punkty(lista):
+    punkty = []
+    for item in lista:
+        loc = geolocator.geocode(f"{item['miejsce']}, Podkarpackie, Polska")
+        if loc:
+            item['coords'] = [loc.latitude, loc.longitude]
+            punkty.append(item)
+    return punkty
 
-if st.sidebar.button("🔄 WYMUŚ SKANOWANIE"):
-    st.session_state.last_df = pobierz_dane_bez_zawieszania()
+punkty_na_mapie = przygotuj_punkty(dane_od_uzytkownika)
 
-# Automatyczne pobieranie przy starcie (tylko jeśli puste)
-if st.session_state.last_df.empty:
-    st.session_state.last_df = pobierz_dane_bez_zawieszania()
-
-df = st.session_state.last_df
-
-# Interfejs
-st.title("🐻 BearAlert PRO: Monitoring Bieszczady")
-
-c1, c2, c3 = st.columns(3)
-with c1: st.metric("System", "Online 🟢")
-with c2: st.metric("Znalezione alerty", len(df))
-with c3: st.metric("Czas (PL)", polski_czas.strftime("%H:%M"))
+# 4. INTERFEJS UŻYTKOWNIKA
+st.title("🐻 BearAlert: Panel Monitorowania")
+st.subheader("Ręczne nanoszenie zagrożeń na mapę")
 
 col_map, col_list = st.columns([2, 1])
 
 with col_map:
+    # Interaktywna ciemna mapa
     m = folium.Map(location=[49.46, 22.35], zoom_start=11, tiles='CartoDB dark_matter')
-    if not df.empty:
-        for _, row in df.iterrows():
-            folium.Marker(
-                location=row['Coords'],
-                popup=f"<b>{row['Miejsce']}</b><br>{row['Tytuł']}<br><a href='{row['Link']}'>Link</a>",
-                icon=folium.Icon(color='red', icon='warning', prefix='fa')
-            ).add_to(m)
-    st_folium(m, width="100%", height=500, key="mapa_glowna")
+    
+    for p in punkty_na_mapie:
+        html = f"""
+        <div style="font-family: Arial; color: black; min-width: 150px;">
+            <h4 style="margin:0; color:red;">{p['miejsce']}</h4>
+            <p style="font-size:12px; margin:5px 0;"><b>{p['data']}</b></p>
+            <p style="font-size:11px;">{p['opis']}</p>
+            <a href="{p['link']}" target="_blank">Otwórz artykuł</a>
+        </div>
+        """
+        folium.Marker(
+            location=p['coords'],
+            popup=folium.Popup(html, max_width=250),
+            tooltip=f"{p['miejsce']} - {p['data']}",
+            icon=folium.Icon(color='red', icon='warning', prefix='fa')
+        ).add_to(m)
+    
+    st_folium(m, width="100%", height=550)
 
 with col_list:
-    st.subheader("🚩 Ostatnie newsy")
-    if not df.empty:
-        for _, row in df.iterrows():
-            with st.expander(f"📍 {row['Miejsce']}"):
-                st.write(row['Tytuł'])
-                st.link_button("Otwórz", row['Link'])
-    else:
-        st.info("Brak nowych danych (lub eSanok blokuje połączenie). Spróbuj kliknąć przycisk ODŚWIEŻ w pasku bocznym za chwilę.")
+    st.metric("Zarejestrowane punkty", len(punkty_na_mapie))
+    st.divider()
+    st.subheader("📜 Lista zdarzeń")
+    for p in punkty_na_mapie:
+        with st.expander(f"🔴 {p['data']} - {p['miejsce']}"):
+            st.write(p['opis'])
+            st.link_button("Zobacz źródło", p['link'])
+
+st.info("💡 Aby dodać nowy punkt, edytuj plik streamlit_app.py na GitHubie w sekcji 'dane_od_uzytkownika'.")
