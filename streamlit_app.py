@@ -8,9 +8,8 @@ from geopy.extra.rate_limiter import RateLimiter
 import pandas as pd
 from datetime import datetime, timedelta
 
-# 1. Konfiguracja strefy czasowej i wyglądu
-st.set_page_config(page_title="BearAlert Bieszczady", layout="wide", page_icon="🐻")
-# Poprawka czasu dla Polski
+# Konfiguracja
+st.set_page_config(page_title="BearAlert PRO", layout="wide", page_icon="🐻")
 polski_czas = datetime.now() + timedelta(hours=2)
 
 st.markdown("""
@@ -20,65 +19,68 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Narzędzia lokalizacji (z unikalnym agentem, by uniknąć blokad)
-geolocator = Nominatim(user_agent="bieszczady_bear_monitor_final_v8")
+# Geolokalizacja - zmiana User-Agent na unikalny losowy ciąg
+geolocator = Nominatim(user_agent="bieszczady_bear_final_rescuetool_99")
 geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
 
-def pobierz_dane_bezpieczne():
-    # Używamy strony głównej - najmniejsza szansa na blokadę
+def pobierz_dane_bez_zawieszania():
     url = "https://esanok.pl/"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0 Safari/537.36'}
+    # Zmieniony User-Agent na bardziej "ludzki"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
     wyniki = []
     
     try:
-        # Krótki timeout (5 sekund), żeby aplikacja nie kręciła się w nieskończoność
-        response = requests.get(url, headers=headers, timeout=5)
+        # Bardzo krótki timeout, żeby aplikacja "nie wisiała"
+        response = requests.get(url, headers=headers, timeout=3)
+        if response.status_code != 200:
+            return pd.DataFrame()
+            
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Szukamy nagłówków z ostatnich newsów
-        artykuły = soup.find_all(['h1', 'h2', 'h3'])
-        
-        for art in artykuły:
-            tytul = art.text.strip()
-            # Szukamy słów kluczowych
-            if any(word in tytul.lower() for word in ["niedźwiedź", "niedźwiedzica", "ataku", "grasuje"]):
-                link_tag = art.find('a')
+        # Skanujemy tylko główne nagłówki h2 i h3 (najszybsze)
+        for tag in soup.find_all(['h2', 'h3']):
+            tytul = tag.get_text().strip()
+            if any(key in tytul.lower() for key in ["niedźwiedź", "niedźwiedzica", "niedźwiedzie"]):
+                link_tag = tag.find('a')
                 if not link_tag: continue
                 link = link_tag['href']
                 
-                # Prosta logika wyciągania miejscowości
-                miejsca = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Ustrzyki", "Huzele", "Płonna", "Myczków", "Olchowce", "Brzozów", "Morochów"]
-                wykryte_miejsce = "Bieszczady"
+                # Wykrywanie miejsca
+                miejsca = ["Zahutyń", "Wołkowyja", "Tarnawa", "Sanok", "Lesko", "Zagórz", "Solina", "Huzele", "Płonna", "Myczków", "Brzozów", "Morochów"]
+                wykryte = "Bieszczady"
                 for m in miejsca:
                     if m.lower() in tytul.lower():
-                        wykryte_miejsce = m
+                        wykryte = m
                         break
                 
-                # Szybkie geokodowanie
-                loc = geocode(f"{wykryte_miejsce}, Podkarpackie, Polska")
+                # Geokodowanie
+                loc = geocode(f"{wykryte}, Podkarpackie, Polska")
                 coords = [loc.latitude, loc.longitude] if loc else [49.46, 22.32]
                 
-                wyniki.append({
-                    "Tytuł": tytul,
-                    "Miejsce": wykryte_miejsce,
-                    "Link": link,
-                    "Coords": coords
-                })
+                wyniki.append({"Tytuł": tytul, "Miejsce": wykryte, "Link": link, "Coords": coords})
         
         return pd.DataFrame(wyniki).drop_duplicates(subset=['Link'])
-    except Exception as e:
-        st.error(f"Nie udało się połączyć z eSanok (Timeout). Spróbuj odświeżyć stronę za chwilę.")
+    except:
+        # W razie jakiegokolwiek błędu/blokady, zwróć pustą tabelę natychmiast
         return pd.DataFrame()
 
-# 3. Logika Dashboardu
-if 'data_bear' not in st.session_state or st.sidebar.button("🔄 ODŚWIEŻ MAPĘ"):
-    with st.spinner('Łączenie z serwerem eSanok...'):
-        st.session_state.data_bear = pobierz_dane_bezpieczne()
+# Logika
+if 'last_df' not in st.session_state:
+    st.session_state.last_df = pd.DataFrame()
 
-df = st.session_state.data_bear
+if st.sidebar.button("🔄 WYMUŚ SKANOWANIE"):
+    st.session_state.last_df = pobierz_dane_bez_zawieszania()
 
-# --- WYŚWIETLANIE ---
-st.title("🐻 BearAlert PRO: Monitoring eSanok")
+# Automatyczne pobieranie przy starcie (tylko jeśli puste)
+if st.session_state.last_df.empty:
+    st.session_state.last_df = pobierz_dane_bez_zawieszania()
+
+df = st.session_state.last_df
+
+# Interfejs
+st.title("🐻 BearAlert PRO: Monitoring Bieszczady")
 
 c1, c2, c3 = st.columns(3)
 with c1: st.metric("System", "Online 🟢")
@@ -93,17 +95,17 @@ with col_map:
         for _, row in df.iterrows():
             folium.Marker(
                 location=row['Coords'],
-                popup=f"<b>{row['Miejsce']}</b><br>{row['Tytuł']}<br><a href='{row['Link']}' target='_blank'>Czytaj więcej</a>",
+                popup=f"<b>{row['Miejsce']}</b><br>{row['Tytuł']}<br><a href='{row['Link']}'>Link</a>",
                 icon=folium.Icon(color='red', icon='warning', prefix='fa')
             ).add_to(m)
-    st_folium(m, width="100%", height=500)
+    st_folium(m, width="100%", height=500, key="mapa_glowna")
 
 with col_list:
-    st.subheader("🚩 Najnowsze newsy")
+    st.subheader("🚩 Ostatnie newsy")
     if not df.empty:
         for _, row in df.iterrows():
             with st.expander(f"📍 {row['Miejsce']}"):
                 st.write(row['Tytuł'])
-                st.link_button("Otwórz artykuł", row['Link'])
+                st.link_button("Otwórz", row['Link'])
     else:
-        st.info("Brak nowych artykułów o niedźwiedziach na stronie głównej eSanok.")
+        st.info("Brak nowych danych (lub eSanok blokuje połączenie). Spróbuj kliknąć przycisk ODŚWIEŻ w pasku bocznym za chwilę.")
